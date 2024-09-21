@@ -11,6 +11,7 @@ from modules.face_analyser import get_one_face, get_unique_faces_from_target_ima
 from modules.capturer import get_video_frame, get_video_frame_total
 from modules.processors.frame.core import get_frame_processors_modules
 from modules.utilities import is_image, is_video, resolve_relative_path, has_image_extension
+import pyvirtualcam
 
 ROOT = None
 POPUP = None
@@ -26,12 +27,12 @@ PREVIEW_DEFAULT_HEIGHT = 540
 
 POPUP_WIDTH = 750
 POPUP_HEIGHT = 810
-POPUP_SCROLL_WIDTH = 740, 
+POPUP_SCROLL_WIDTH = 740,
 POPUP_SCROLL_HEIGHT = 700
 
 POPUP_LIVE_WIDTH = 900
 POPUP_LIVE_HEIGHT = 820
-POPUP_LIVE_SCROLL_WIDTH = 890, 
+POPUP_LIVE_SCROLL_WIDTH = 890,
 POPUP_LIVE_SCROLL_HEIGHT = 700
 
 MAPPER_PREVIEW_MAX_HEIGHT = 100
@@ -149,6 +150,10 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     donate_label.configure(text_color=ctk.ThemeManager.theme.get('URL').get('text_color'))
     donate_label.bind('<Button>', lambda event: webbrowser.open('https://paypal.me/hacksider'))
 
+    original_frame_preview = ctk.BooleanVar(value=modules.globals.original_frame_preview)
+    original_frame_preview_switch = ctk.CTkSwitch(root, text='Original Frame Preview', variable=original_frame_preview, cursor='hand2', command=lambda: setattr(modules.globals, 'original_frame_preview', original_frame_preview.get()))
+    original_frame_preview_switch.place(relx=0.6, rely=0.75)
+
     return root
 
 def analyze_target(start: Callable[[], None], root: ctk.CTk):
@@ -227,7 +232,7 @@ def update_popup_source(scrollable_frame: ctk.CTkScrollableFrame, map: list, but
         map[button_num].pop("source")
         source_label_dict[button_num].destroy()
         del source_label_dict[button_num]
-        
+
     if source_path == "":
         return map
     else:
@@ -241,11 +246,11 @@ def update_popup_source(scrollable_frame: ctk.CTkScrollableFrame, map: list, but
                 'cv2' : cv2_img[int(y_min):int(y_max), int(x_min):int(x_max)],
                 'face' : face
                 }
-            
+
             image = Image.fromarray(cv2.cvtColor(map[button_num]['source']['cv2'], cv2.COLOR_BGR2RGB))
             image = image.resize((MAPPER_PREVIEW_MAX_WIDTH, MAPPER_PREVIEW_MAX_HEIGHT), Image.LANCZOS)
             tk_image = ctk.CTkImage(image, size=image.size)
-            
+
             source_image = ctk.CTkLabel(scrollable_frame, text=f"S-{button_num}", width=MAPPER_PREVIEW_MAX_WIDTH, height=MAPPER_PREVIEW_MAX_HEIGHT)
             source_image.grid(row=button_num, column=1, padx=10, pady=10)
             source_image.configure(image=tk_image)
@@ -463,7 +468,7 @@ def webcam_preview(root: ctk.CTk):
 def create_webcam_preview():
     global preview_label, PREVIEW
 
-    camera = cv2.VideoCapture(0)                                    # Use index for the webcam (adjust the index accordingly if necessary)    
+    camera = cv2.VideoCapture(0)                                    # Use index for the webcam (adjust the index accordingly if necessary)
     camera.set(cv2.CAP_PROP_FRAME_WIDTH, PREVIEW_DEFAULT_WIDTH)     # Set the width of the resolution
     camera.set(cv2.CAP_PROP_FRAME_HEIGHT, PREVIEW_DEFAULT_HEIGHT)   # Set the height of the resolution
     camera.set(cv2.CAP_PROP_FPS, 60)                                # Set the frame rate of the webcam
@@ -475,6 +480,10 @@ def create_webcam_preview():
     frame_processors = get_frame_processors_modules(modules.globals.frame_processors)
 
     source_image = None  # Initialize variable for the selected face image
+
+
+    # 仮想カメラを作る
+    v_cam = pyvirtualcam.Camera(width=PREVIEW_DEFAULT_WIDTH, height=PREVIEW_DEFAULT_HEIGHT, fps=30)
 
     while camera:
         ret, frame = camera.read()
@@ -489,24 +498,45 @@ def create_webcam_preview():
         if modules.globals.live_resizable:
             temp_frame = fit_image_to_size(temp_frame, PREVIEW.winfo_width(), PREVIEW.winfo_height())
 
+        converted_frame = None
+
         if not modules.globals.map_faces:
             # Select and save face image only once
             if source_image is None and modules.globals.source_path:
                 source_image = get_one_face(cv2.imread(modules.globals.source_path))
 
             for frame_processor in frame_processors:
-                    temp_frame = frame_processor.process_frame(source_image, temp_frame)
+                converted_frame = frame_processor.process_frame(source_image, temp_frame)
         else:
             modules.globals.target_path = None
 
             for frame_processor in frame_processors:
-                temp_frame = frame_processor.process_frame_v2(temp_frame)
+                converted_frame = frame_processor.process_frame_v2(temp_frame)
 
-        image = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)  # Convert the image to RGB format to display it with Tkinter
-        image = Image.fromarray(image)
-        image = ImageOps.contain(image, (temp_frame.shape[1], temp_frame.shape[0]), Image.LANCZOS)
-        image = ctk.CTkImage(image, size=image.size)
-        preview_label.configure(image=image)
+        temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)  # Convert the image to RGB format to display it with Tkinter
+        converted_frame = cv2.cvtColor(converted_frame, cv2.COLOR_BGR2RGB)  # Convert the image to RGB format to display it with Tkinter
+
+        # 仮想カメラに出力する
+        try:
+            image_for_v_cam = fit_image_to_size(converted_frame, PREVIEW_DEFAULT_WIDTH, PREVIEW_DEFAULT_HEIGHT)
+            v_cam.send(image_for_v_cam)
+        except Exception as e:
+            print("仮想カメラへの出力に失敗しました。", e)
+
+        converted_frame = Image.fromarray(converted_frame)
+        converted_frame = ImageOps.contain(converted_frame, (temp_frame.shape[1], temp_frame.shape[0]), Image.LANCZOS)
+
+        output_frame = None
+        if modules.globals.original_frame_preview:
+            # 元画像と変換後の画像を縦に結合する
+            output_frame = Image.new('RGB', (temp_frame.shape[1], temp_frame.shape[0] * 2))
+            output_frame.paste(converted_frame, (0, 0))
+            output_frame.paste(Image.fromarray(temp_frame), (0, temp_frame.shape[0]))
+        else :
+            output_frame = converted_frame
+
+        output_frame = ctk.CTkImage(output_frame, size=output_frame.size)
+        preview_label.configure(image=output_frame)
         ROOT.update()
 
         if PREVIEW.state() == 'withdrawn':
@@ -599,7 +629,7 @@ def update_webcam_source(scrollable_frame: ctk.CTkScrollableFrame, map: list, bu
         map[button_num].pop("source")
         source_label_dict_live[button_num].destroy()
         del source_label_dict_live[button_num]
-        
+
     if source_path == "":
         return map
     else:
@@ -613,11 +643,11 @@ def update_webcam_source(scrollable_frame: ctk.CTkScrollableFrame, map: list, bu
                 'cv2' : cv2_img[int(y_min):int(y_max), int(x_min):int(x_max)],
                 'face' : face
                 }
-            
+
             image = Image.fromarray(cv2.cvtColor(map[button_num]['source']['cv2'], cv2.COLOR_BGR2RGB))
             image = image.resize((MAPPER_PREVIEW_MAX_WIDTH, MAPPER_PREVIEW_MAX_HEIGHT), Image.LANCZOS)
             tk_image = ctk.CTkImage(image, size=image.size)
-            
+
             source_image = ctk.CTkLabel(scrollable_frame, text=f"S-{button_num}", width=MAPPER_PREVIEW_MAX_WIDTH, height=MAPPER_PREVIEW_MAX_HEIGHT)
             source_image.grid(row=button_num, column=1, padx=10, pady=10)
             source_image.configure(image=tk_image)
@@ -625,7 +655,7 @@ def update_webcam_source(scrollable_frame: ctk.CTkScrollableFrame, map: list, bu
         else:
             update_pop_live_status("Face could not be detected in last upload!")
         return map
-    
+
 def update_webcam_target(scrollable_frame: ctk.CTkScrollableFrame, map: list, button_num: int) -> list:
     global target_label_dict_live
 
@@ -635,7 +665,7 @@ def update_webcam_target(scrollable_frame: ctk.CTkScrollableFrame, map: list, bu
         map[button_num].pop("target")
         target_label_dict_live[button_num].destroy()
         del target_label_dict_live[button_num]
-        
+
     if target_path == "":
         return map
     else:
@@ -649,11 +679,11 @@ def update_webcam_target(scrollable_frame: ctk.CTkScrollableFrame, map: list, bu
                 'cv2' : cv2_img[int(y_min):int(y_max), int(x_min):int(x_max)],
                 'face' : face
                 }
-            
+
             image = Image.fromarray(cv2.cvtColor(map[button_num]['target']['cv2'], cv2.COLOR_BGR2RGB))
             image = image.resize((MAPPER_PREVIEW_MAX_WIDTH, MAPPER_PREVIEW_MAX_HEIGHT), Image.LANCZOS)
             tk_image = ctk.CTkImage(image, size=image.size)
-            
+
             target_image = ctk.CTkLabel(scrollable_frame, text=f"T-{button_num}", width=MAPPER_PREVIEW_MAX_WIDTH, height=MAPPER_PREVIEW_MAX_HEIGHT)
             target_image.grid(row=button_num, column=4, padx=20, pady=10)
             target_image.configure(image=tk_image)
@@ -661,4 +691,3 @@ def update_webcam_target(scrollable_frame: ctk.CTkScrollableFrame, map: list, bu
         else:
             update_pop_live_status("Face could not be detected in last upload!")
         return map
-
