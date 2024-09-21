@@ -150,6 +150,10 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     donate_label.configure(text_color=ctk.ThemeManager.theme.get('URL').get('text_color'))
     donate_label.bind('<Button>', lambda event: webbrowser.open('https://paypal.me/hacksider'))
 
+    original_frame_preview = ctk.BooleanVar(value=modules.globals.original_frame_preview)
+    original_frame_preview_switch = ctk.CTkSwitch(root, text='Original Frame Preview', variable=original_frame_preview, cursor='hand2', command=lambda: setattr(modules.globals, 'original_frame_preview', original_frame_preview.get()))
+    original_frame_preview_switch.place(relx=0.6, rely=0.75)
+
     return root
 
 def analyze_target(start: Callable[[], None], root: ctk.CTk):
@@ -494,34 +498,46 @@ def create_webcam_preview():
         if modules.globals.live_resizable:
             temp_frame = fit_image_to_size(temp_frame, PREVIEW.winfo_width(), PREVIEW.winfo_height())
 
+        converted_frame = None
+
         if not modules.globals.map_faces:
             # Select and save face image only once
             if source_image is None and modules.globals.source_path:
                 source_image = get_one_face(cv2.imread(modules.globals.source_path))
 
             for frame_processor in frame_processors:
-                    temp_frame = frame_processor.process_frame(source_image, temp_frame)
+                converted_frame = frame_processor.process_frame(source_image, temp_frame)
         else:
             modules.globals.target_path = None
 
             for frame_processor in frame_processors:
-                temp_frame = frame_processor.process_frame_v2(temp_frame)
+                converted_frame = frame_processor.process_frame_v2(temp_frame)
 
-        image = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)  # Convert the image to RGB format to display it with Tkinter
+        temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)  # Convert the image to RGB format to display it with Tkinter
+        converted_frame = cv2.cvtColor(converted_frame, cv2.COLOR_BGR2RGB)  # Convert the image to RGB format to display it with Tkinter
 
         # 仮想カメラに出力する
         try:
-            image_for_v_cam = fit_image_to_size(image, PREVIEW_DEFAULT_WIDTH, PREVIEW_DEFAULT_HEIGHT)
+            image_for_v_cam = fit_image_to_size(converted_frame, PREVIEW_DEFAULT_WIDTH, PREVIEW_DEFAULT_HEIGHT)
             v_cam.send(image_for_v_cam)
         except Exception as e:
             print("仮想カメラへの出力に失敗しました。", e)
 
-        image = Image.fromarray(image)
-        image = ImageOps.contain(image, (temp_frame.shape[1], temp_frame.shape[0]), Image.LANCZOS)
-        image = ctk.CTkImage(image, size=image.size)
-        preview_label.configure(image=image)
-        ROOT.update()
+        converted_frame = Image.fromarray(converted_frame)
+        converted_frame = ImageOps.contain(converted_frame, (temp_frame.shape[1], temp_frame.shape[0]), Image.LANCZOS)
 
+        output_frame = None
+        if modules.globals.original_frame_preview:
+            # 元画像と変換後の画像を縦に結合する
+            output_frame = Image.new('RGB', (temp_frame.shape[1], temp_frame.shape[0] * 2))
+            output_frame.paste(converted_frame, (0, 0))
+            output_frame.paste(Image.fromarray(temp_frame), (0, temp_frame.shape[0]))
+        else :
+            output_frame = converted_frame
+
+        output_frame = ctk.CTkImage(output_frame, size=output_frame.size)
+        preview_label.configure(image=output_frame)
+        ROOT.update()
 
         if PREVIEW.state() == 'withdrawn':
             break
